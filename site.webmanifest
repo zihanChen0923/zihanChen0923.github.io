@@ -1,0 +1,18 @@
+{
+  "name": "Eric Chen Portfolio",
+  "short_name": "Eric Chen",
+  "description": "Academic portfolio for Eric Chen, focused on mathematics, statistics, data analysis, and applied modeling.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#082a48",
+  "icons": [
+    {
+      "src": "/eric-avatar.jpg",
+      "sizes": "900x900",
+      "type": "image/jpeg",
+      "purpose": "any"
+    }
+  ]
+}
