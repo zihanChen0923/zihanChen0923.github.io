@@ -1,0 +1,128 @@
+name: Sync Private Source
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      should-deploy: ${{ steps.changes.outputs.should-deploy }}
+      source-sha: ${{ steps.changes.outputs.source-sha }}
+    steps:
+      - name: Checkout private source read-only
+        uses: actions/checkout@v7
+        with:
+          repository: zihanChen0923/Eric-Personal-Website
+          ssh-key: ${{ secrets.PRIVATE_SOURCE_DEPLOY_KEY }}
+          persist-credentials: false
+          path: source
+
+      - name: Check for a new source version
+        id: changes
+        shell: bash
+        run: |
+          source_sha="$(git -C source rev-parse HEAD)"
+          deployed_sha="$(curl --fail --silent --show-error 'https://zihanchen0923.github.io/deployment-version.txt?check=1' || true)"
+
+          echo "source-sha=${source_sha}" >> "$GITHUB_OUTPUT"
+
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] || [ "$deployed_sha" != "$source_sha" ]; then
+            echo 'should-deploy=true' >> "$GITHUB_OUTPUT"
+            echo "Deployment required: ${deployed_sha:-none} -> ${source_sha}"
+          else
+            echo 'should-deploy=false' >> "$GITHUB_OUTPUT"
+            echo "Public site already matches ${source_sha}."
+          fi
+
+      - name: Setup Node
+        if: steps.changes.outputs.should-deploy == 'true'
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: source/package-lock.json
+
+      - name: Install dependencies
+        if: steps.changes.outputs.should-deploy == 'true'
+        working-directory: source
+        run: npm ci
+
+      - name: Install Playwright browser
+        if: steps.changes.outputs.should-deploy == 'true'
+        working-directory: source
+        run: npx playwright install --with-deps chromium
+
+      - name: Verify release
+        if: steps.changes.outputs.should-deploy == 'true'
+        working-directory: source
+        run: npm run verify:release
+
+      - name: Prepare Pages artifact
+        if: steps.changes.outputs.should-deploy == 'true'
+        shell: bash
+        run: |
+          rm -f source/dist/CNAME
+          touch source/dist/.nojekyll
+          printf '%s\n' "${{ steps.changes.outputs.source-sha }}" > source/dist/deployment-version.txt
+
+      - name: Configure Pages
+        if: steps.changes.outputs.should-deploy == 'true'
+        uses: actions/configure-pages@v6
+
+      - name: Upload Pages artifact
+        if: steps.changes.outputs.should-deploy == 'true'
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: source/dist
+
+  deploy:
+    if: needs.build.outputs.should-deploy == 'true'
+    needs: build
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
+
+  smoke:
+    if: needs.build.outputs.should-deploy == 'true'
+    needs:
+      - build
+      - deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify exact public version
+        env:
+          EXPECTED_SHA: ${{ needs.build.outputs.source-sha }}
+        shell: bash
+        run: |
+          for attempt in {1..60}; do
+            deployed_sha="$(curl --fail --silent --show-error "https://zihanchen0923.github.io/deployment-version.txt?run=${GITHUB_RUN_ID}" || true)"
+
+            if [ "$deployed_sha" = "$EXPECTED_SHA" ]; then
+              curl --fail --silent --show-error 'https://zihanchen0923.github.io/' > /dev/null
+              echo "Exact source version is live: ${EXPECTED_SHA}"
+              exit 0
+            fi
+
+            echo "Waiting for GitHub Pages (${attempt}/60)..."
+            sleep 10
+          done
+
+          echo "Timed out waiting for source ${EXPECTED_SHA}" >&2
+          exit 1
